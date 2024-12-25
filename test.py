@@ -19,10 +19,15 @@ def receive_detection():
         # Récupérer les données envoyées par le client
         data = request.get_json()
 
-        # Vérifier que la valeur 'x' existe dans les données
-        if 'x' in data:
-            # Convertir 'x' en entier (au cas où il est reçu en tant que chaîne)
-            x = int(data['x'])
+        # Vérifier que la valeur 'x' et 'y' existent dans les données
+        if 'x' in data and 'y' in data:
+            # Convertir 'x' et 'y' en float (au cas où ils sont envoyés sous forme de chaîne)
+            x = float(data['x'])
+            y = float(data['y'])
+
+            # Arrondir ou convertir 'x' et 'y' en entier si nécessaire
+            x = int(x)  # Cette ligne peut être remplacée par round(x) si vous souhaitez arrondir
+            y = int(y)  # Arrondir ou convertir 'y' en entier
 
             # Déterminer l'index basé sur la valeur de x
             if x == 1:
@@ -35,7 +40,7 @@ def receive_detection():
             # Mettre à jour les données dans l'index approprié
             detection_data[index]['detection'] = data.get('detection', detection_data[index]['detection'])
             detection_data[index]['x'] = data['x']
-            detection_data[index]['y'] = data.get('y', detection_data[index]['y'])
+            detection_data[index]['y'] = data['y']
 
             # Afficher les données mises à jour
             print(f"Index {index} mis à jour : {detection_data[index]}")
@@ -45,7 +50,7 @@ def receive_detection():
 
             return jsonify({"message": f"Données mises à jour à l'index {index} avec succès"}), 200
         else:
-            return jsonify({"error": "La valeur 'x' est requise"}), 400
+            return jsonify({"error": "Les valeurs 'x' et 'y' sont requises"}), 400
 
     except Exception as e:
         print(f"Erreur : {e}")
@@ -66,4 +71,5 @@ def handle_disconnect():
     print("Un client s'est déconnecté")
 
 if __name__ == '__main__':
+    # Lancer l'application en local
     socketio.run(app, host='0.0.0.0', port=5000, debug=True)
