@@ -6,8 +6,11 @@ app = Flask(__name__)
 CORS(app)  # Autoriser les requêtes depuis d'autres origines
 socketio = SocketIO(app, cors_allowed_origins="*")  # Permet d'utiliser les WebSockets
 
-# Stockage des données de détection avec x et y
-detection_data = {"detection": 0, "x": None, "y": None}
+# Initialisation du tableau avec deux objets vides
+detection_data = [
+    {"detection": 0, "x": None, "y": None},  # Index 0
+    {"detection": 0, "x": None, "y": None}   # Index 1
+]
 
 @app.route('/send_detection', methods=['POST'])
 def receive_detection():
@@ -16,23 +19,33 @@ def receive_detection():
         # Récupérer les données envoyées par le client
         data = request.get_json()
 
-        # Mettre à jour la valeur 'detection' (toujours mise à jour)
-        if 'detection' in data:
-            detection_data['detection'] = data['detection']
+        # Vérifier que la valeur 'x' existe dans les données
+        if 'x' in data:
+            # Convertir 'x' en entier (au cas où il est reçu en tant que chaîne)
+            x = int(data['x'])
 
-        # Mettre à jour x et y uniquement si elles ne sont pas encore définies
-        if detection_data['x'] is None and 'x' in data:
-            detection_data['x'] = data['x']
-        if detection_data['y'] is None and 'y' in data:
-            detection_data['y'] = data['y']
+            # Déterminer l'index basé sur la valeur de x
+            if x == 1:
+                index = 0
+            elif x == 2:
+                index = 1
+            else:
+                return jsonify({"error": "Valeur de x invalide, elle doit être 1 ou 2"}), 400
 
-        # Afficher les données reçues
-        print(f"Détection : {detection_data['detection']}, x: {detection_data['x']}, y: {detection_data['y']}")
+            # Mettre à jour les données dans l'index approprié
+            detection_data[index]['detection'] = data.get('detection', detection_data[index]['detection'])
+            detection_data[index]['x'] = data['x']
+            detection_data[index]['y'] = data.get('y', detection_data[index]['y'])
 
-        # Émettre les nouvelles données à tous les clients connectés via WebSocket
-        socketio.emit('update_detection', detection_data, broadcast=True)  # broadcast=True pour envoyer à tous les clients
+            # Afficher les données mises à jour
+            print(f"Index {index} mis à jour : {detection_data[index]}")
 
-        return jsonify({"message": "Données reçues avec succès"}), 200
+            # Émettre les nouvelles données à tous les clients connectés via WebSocket
+            socketio.emit('update_detection', detection_data, broadcast=True)  # broadcast=True pour envoyer à tous les clients
+
+            return jsonify({"message": f"Données mises à jour à l'index {index} avec succès"}), 200
+        else:
+            return jsonify({"error": "La valeur 'x' est requise"}), 400
 
     except Exception as e:
         print(f"Erreur : {e}")
@@ -40,7 +53,7 @@ def receive_detection():
 
 @app.route('/get_detection', methods=['GET'])
 def send_detection():
-    # Retourne les données actuelles de détection
+    # Retourne le tableau de données actuel
     return jsonify(detection_data)
 
 @socketio.on('connect')
