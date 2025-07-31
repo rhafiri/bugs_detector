@@ -71,7 +71,38 @@ def init_database():
         logging.error(f"Database initialization error: {e}")
         return False
 
-def save_detection_to_db(card_id, detection, timestamp_ms, formatted_date):
+def empty_database():
+    """Empty all data from the detections table"""
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        
+        # Get count before deletion
+        cursor.execute("SELECT COUNT(*) FROM detections")
+        count_before = cursor.fetchone()[0]
+        logging.info(f"Records before deletion: {count_before}")
+        
+        # Delete all records
+        cursor.execute("DELETE FROM detections")
+        
+        # Reset the auto-increment counter
+        cursor.execute("DELETE FROM sqlite_sequence WHERE name='detections'")
+        
+        conn.commit()
+        
+        # Verify deletion
+        cursor.execute("SELECT COUNT(*) FROM detections")
+        count_after = cursor.fetchone()[0]
+        logging.info(f"Records after deletion: {count_after}")
+        
+        conn.close()
+        
+        logging.info(f"Database emptied successfully. Deleted {count_before} records.")
+        return True, f"Successfully deleted {count_before} records"
+        
+    except Exception as e:
+        logging.error(f"Error emptying database: {e}")
+        return False, f"Error: {str(e)}"
     """Save detection data to SQLite database"""
     try:
         # Debug: Log current working directory and database path
