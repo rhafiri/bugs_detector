@@ -184,7 +184,7 @@ def receive_detection():
 
 @app.route('/get_detection', methods=['GET'])
 def send_detection():
-    """Get the most recent detection data from database in the required format"""
+    """Get the total sum of all detections for each card from database"""
     try:
         # Ensure database exists before querying
         init_database()
@@ -192,29 +192,21 @@ def send_detection():
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
         
-        # Get the most recent detection for each card (latest timestamp)
+        # Get the SUM of all detections for each card
         cursor.execute('''
             SELECT 
                 card_id, 
-                detection, 
-                datetime_formatted,
-                timestamp_ms
-            FROM detections d1
-            WHERE timestamp_ms = (
-                SELECT MAX(timestamp_ms) 
-                FROM detections d2 
-                WHERE d2.card_id = d1.card_id
-            )
+                SUM(detection) as total_detections,
+                MAX(datetime_formatted) as last_update
+            FROM detections
+            GROUP BY card_id
             ORDER BY card_id
         ''')
         
         results = cursor.fetchall()
         conn.close()
         
-        logging.info(f"Latest detection data from DB: {results}")
-        
-        # Create the response format
-        formatted_data = []
+        logging.info(f"Total detection sums from DB: {results}")
         
         # Initialize with default values for both cards
         card_data = {
@@ -222,16 +214,16 @@ def send_detection():
             2: {"detection": "0", "x": 2.0, "y": "01/01/1970 00:00:00"}
         }
         
-        # Update with actual data from database
+        # Update with actual sums from database
         for row in results:
             card_id = row[0]
-            detection = str(row[1])  # Convert to string as required
-            datetime_formatted = row[2]
+            total_detections = str(row[1])  # Convert to string as required
+            last_update = row[2]
             
             card_data[card_id] = {
-                "detection": detection,
+                "detection": total_detections,
                 "x": float(card_id),
-                "y": datetime_formatted
+                "y": last_update
             }
         
         # Convert to list format (card 1 first, then card 2)
@@ -317,7 +309,7 @@ def get_detections_per_day():
 
 @app.route('/detections_per_hour', methods=['GET'])
 def get_detections_per_hour():
-    """Get detection count grouped by hour of the day (incremental differences)"""
+    """Get detection count grouped by hour of the day (sum of detections per hour)"""
     try:
         # Ensure database exists before querying
         init_database()
@@ -329,14 +321,12 @@ def get_detections_per_hour():
         date = request.args.get('date')  # Format: YYYY-MM-DD
         logging.info(f"Date filter requested: {date}")
         
-        # Get DISTINCT detections ordered by timestamp to avoid duplicates
+        # Get SUM of detections grouped by hour and card
         query = '''
             SELECT 
-                card_id,
-                detection,
-                timestamp_ms,
                 strftime('%H', datetime(timestamp_ms/1000, 'unixepoch')) as hour,
-                DATE(datetime(timestamp_ms/1000, 'unixepoch')) as date
+                card_id,
+                SUM(detection) as total_detections
             FROM detections
             WHERE 1=1
         '''
@@ -346,60 +336,31 @@ def get_detections_per_hour():
             query += " AND DATE(datetime(timestamp_ms/1000, 'unixepoch')) = ?"
             params.append(date)
         
-        # Group by card_id, timestamp_ms to get unique readings per timestamp
-        query += " GROUP BY card_id, timestamp_ms ORDER BY card_id, timestamp_ms"
+        query += " GROUP BY strftime('%H', datetime(timestamp_ms/1000, 'unixepoch')), card_id ORDER BY hour"
         
         logging.info(f"Executing query: {query} with params: {params}")
         cursor.execute(query, params)
         results = cursor.fetchall()
         
-        logging.info(f"Deduplicated data from database: {results}")
+        logging.info(f"Hourly detection sums from database: {results}")
         
-        # Calculate incremental differences for each card
+        # Initialize hourly data
         hourly_data = {}
         for hour in range(24):
             hourly_data[hour] = {"Trap 1": 0, "Trap 2": 0}
         
-        # Process data for each card separately
-        card_data = {1: [], 2: []}
+        # Fill with actual sums from database
         for row in results:
-            card_id = row[0]
-            detection = row[1]
-            timestamp_ms = row[2]
-            hour = int(row[3])
-            card_data[card_id].append((detection, timestamp_ms, hour))
-        
-        # Calculate incremental differences for each card
-        for card_id in [1, 2]:
-            trap_name = f"Trap {card_id}"
-            data_points = card_data[card_id]
+            hour = int(row[0])
+            card_id = row[1]
+            total_detections = row[2]
             
-            logging.info(f"Processing {trap_name} with {len(data_points)} unique data points: {data_points}")
+            logging.info(f"Hour {hour:02d}: Card {card_id} = {total_detections} detections")
             
-            for i in range(len(data_points)):
-                current_detection = data_points[i][0]
-                current_hour = data_points[i][2]
-                
-                if i == 0:
-                    # First reading: use the detection value as-is
-                    increment = current_detection
-                    logging.info(f"{trap_name} - First reading at hour {current_hour}: {current_detection} (using as increment: {increment})")
-                else:
-                    # Calculate difference from previous reading
-                    previous_detection = data_points[i-1][0]
-                    increment = current_detection - previous_detection
-                    logging.info(f"{trap_name} - Hour {current_hour}: current={current_detection}, previous={previous_detection}, increment={increment}")
-                
-                # Handle negative increments (sensor reset or error)
-                if increment < 0:
-                    logging.warning(f"{trap_name} - Negative increment detected: {increment}. Using current value instead.")
-                    increment = current_detection  # Use current value when sensor resets
-                
-                # Add increment to the hour
-                if card_id == 1:
-                    hourly_data[current_hour]["Trap 1"] += increment
-                elif card_id == 2:
-                    hourly_data[current_hour]["Trap 2"] += increment
+            if card_id == 1:
+                hourly_data[hour]["Trap 1"] = total_detections
+            elif card_id == 2:
+                hourly_data[hour]["Trap 2"] = total_detections
         
         logging.info(f"Final hourly data: {hourly_data}")
         
@@ -477,4 +438,4 @@ if __name__ == '__main__':
     
     print("Starting Flask server...")
     # DISABLE auto-reloader to prevent multiple process issues
-    socketio.run(app, host='0.0.0.0', port=5000, debug=True)
+    socketio.run(app, host='0.0.0.0', port=5000, debug=True, use_reloader=False)
