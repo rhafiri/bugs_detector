@@ -70,7 +70,7 @@ def init_database():
     except Exception as e:
         logging.error(f"Database initialization error: {e}")
         return False
-
+@app.route('/empty_database', methods=['GET'])
 def empty_database():
     """Empty all data from the detections table"""
     try:
