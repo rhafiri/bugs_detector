@@ -21,41 +21,55 @@ detection_data = [{"detection": 0, "x": None, "y": None} for _ in range(num_poin
 
 def init_database():
     """Initialize the SQLite database with detections table"""
-    logging.info(f"Database path: {DB_NAME}")
-    logging.info(f"Database exists before init: {os.path.exists(DB_NAME)}")
-    
-    # Check if we can write to the directory
-    db_dir = os.path.dirname(DB_NAME)
-    logging.info(f"Database directory: {db_dir}")
-    logging.info(f"Directory writable: {os.access(db_dir, os.W_OK)}")
-    
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS detections (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            card_id INTEGER NOT NULL,
-            detection INTEGER NOT NULL,
-            timestamp_ms INTEGER NOT NULL,
-            datetime_formatted TEXT NOT NULL,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
-    conn.commit()
-    
-    # Check if data exists after creation
-    cursor.execute("SELECT COUNT(*) FROM detections")
-    count = cursor.fetchone()[0]
-    logging.info(f"Records in database after init: {count}")
-    
-    # Show file size to verify it's actually being written
-    if os.path.exists(DB_NAME):
-        file_size = os.path.getsize(DB_NAME)
-        logging.info(f"Database file size: {file_size} bytes")
-    
-    conn.close()
+    try:
+        logging.info(f"Database path: {DB_NAME}")
+        logging.info(f"Database exists before init: {os.path.exists(DB_NAME)}")
+        
+        # Check if we can write to the directory
+        db_dir = os.path.dirname(DB_NAME)
+        if not db_dir:  # If DB_NAME is just a filename, use current directory
+            db_dir = os.getcwd()
+        logging.info(f"Database directory: {db_dir}")
+        logging.info(f"Directory writable: {os.access(db_dir, os.W_OK)}")
+        
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        
+        # Create table with IF NOT EXISTS
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS detections (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                card_id INTEGER NOT NULL,
+                detection INTEGER NOT NULL,
+                timestamp_ms INTEGER NOT NULL,
+                datetime_formatted TEXT NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        conn.commit()
+        
+        # Verify table was created
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='detections'")
+        table_exists = cursor.fetchone()
+        logging.info(f"Table 'detections' exists after creation: {table_exists is not None}")
+        
+        # Check if data exists after creation
+        cursor.execute("SELECT COUNT(*) FROM detections")
+        count = cursor.fetchone()[0]
+        logging.info(f"Records in database after init: {count}")
+        
+        # Show file size to verify it's actually being written
+        if os.path.exists(DB_NAME):
+            file_size = os.path.getsize(DB_NAME)
+            logging.info(f"Database file size: {file_size} bytes")
+        
+        conn.close()
+        return True
+        
+    except Exception as e:
+        logging.error(f"Database initialization error: {e}")
+        return False
 
 def save_detection_to_db(card_id, detection, timestamp_ms, formatted_date):
     """Save detection data to SQLite database"""
@@ -172,6 +186,9 @@ def receive_detection():
 def send_detection():
     """Get the most recent detection data from database in the required format"""
     try:
+        # Ensure database exists before querying
+        init_database()
+        
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
         
