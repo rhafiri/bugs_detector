@@ -70,6 +70,7 @@ def init_database():
     except Exception as e:
         logging.error(f"Database initialization error: {e}")
         return False
+
 @app.route('/empty_database', methods=['GET'])
 def empty_database():
     """Empty all data from the detections table"""
@@ -155,6 +156,49 @@ def convert_timestamp_to_datetime(timestamp_ms):
         logging.error(f"Erreur conversion timestamp: {e}")
         return str(timestamp_ms)
 
+def save_detection_to_db(card_id, detection, timestamp_ms, formatted_date):
+    """Save detection data to SQLite database"""
+    try:
+        # Debug: Log current working directory and database path
+        current_dir = os.getcwd()
+        logging.info(f"Current working directory: {current_dir}")
+        logging.info(f"Attempting to write to database: {DB_NAME}")
+        
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            INSERT INTO detections (card_id, detection, timestamp_ms, datetime_formatted)
+            VALUES (?, ?, ?, ?)
+        ''', (card_id, detection, timestamp_ms, formatted_date))
+        
+        conn.commit()
+        conn.close()
+        
+        # IMMEDIATE verification after insert
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM detections")
+        count_after_insert = cursor.fetchone()[0]
+        cursor.execute("SELECT * FROM detections WHERE card_id = ? ORDER BY created_at DESC LIMIT 1", (card_id,))
+        last_inserted = cursor.fetchone()
+        conn.close()
+        
+        logging.info(f"Saved to DB - Card: {card_id}, Detection: {detection}, Time: {formatted_date}")
+        logging.info(f"Total records after insert: {count_after_insert}")
+        logging.info(f"Last inserted record: {last_inserted}")
+        
+        # Check file metadata
+        if os.path.exists(DB_NAME):
+            file_size = os.path.getsize(DB_NAME)
+            mod_time = os.path.getmtime(DB_NAME)
+            logging.info(f"Database file size after insert: {file_size} bytes, modified: {mod_time}")
+        
+        return True
+    except Exception as e:
+        logging.error(f"Database error: {e}")
+        logging.error(f"Failed to save - Card: {card_id}, Detection: {detection}")
+        return False
 @app.route('/send_detection', methods=['POST'])
 def receive_detection():
     global detection_data
