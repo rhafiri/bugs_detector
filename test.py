@@ -257,9 +257,10 @@ def receive_detection():
         logging.error(f"Error: {e}")
         return jsonify({"error": "Error processing data"}), 400
 
+
 @app.route('/get_detection', methods=['GET'])
 def send_detection():
-    """Get the total sum of all detections for each card from database"""
+    """Get the most recent detection data from database (latest cumulative values)"""
     try:
         # Ensure database exists before querying
         init_database()
@@ -267,21 +268,26 @@ def send_detection():
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
         
-        # Get the SUM of all detections for each card
+        # Get the most recent detection for each card (latest timestamp)
         cursor.execute('''
             SELECT 
                 card_id, 
-                SUM(detection) as total_detections,
-                MAX(datetime_formatted) as last_update
-            FROM detections
-            GROUP BY card_id
+                detection, 
+                datetime_formatted,
+                timestamp_ms
+            FROM detections d1
+            WHERE timestamp_ms = (
+                SELECT MAX(timestamp_ms) 
+                FROM detections d2 
+                WHERE d2.card_id = d1.card_id
+            )
             ORDER BY card_id
         ''')
         
         results = cursor.fetchall()
         conn.close()
         
-        logging.info(f"Total detection sums from DB: {results}")
+        logging.info(f"Latest detection data from DB: {results}")
         
         # Initialize with default values for both cards
         card_data = {
@@ -289,16 +295,16 @@ def send_detection():
             2: {"detection": "0", "x": 2.0, "y": "01/01/1970 00:00:00"}
         }
         
-        # Update with actual sums from database
+        # Update with actual latest values from database
         for row in results:
             card_id = row[0]
-            total_detections = str(row[1])  # Convert to string as required
-            last_update = row[2]
+            detection = str(row[1])  # Convert to string as required
+            datetime_formatted = row[2]
             
             card_data[card_id] = {
-                "detection": total_detections,
+                "detection": detection,
                 "x": float(card_id),
-                "y": last_update
+                "y": datetime_formatted
             }
         
         # Convert to list format (card 1 first, then card 2)
@@ -317,6 +323,121 @@ def send_detection():
             {"detection": "0", "x": 1.0, "y": "01/01/1970 00:00:00"},
             {"detection": "0", "x": 2.0, "y": "01/01/1970 00:00:00"}
         ])
+
+@app.route('/detections_per_hour', methods=['GET'])
+def get_detections_per_hour():
+    """Get detection count grouped by hour of the day (incremental differences between hours)"""
+    try:
+        # Ensure database exists before querying
+        init_database()
+        
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        
+        # Get optional date filter from query parameters
+        date = request.args.get('date')  # Format: YYYY-MM-DD
+        logging.info(f"Date filter requested: {date}")
+        
+        # Get all detections ordered by timestamp for each card
+        query = '''
+            SELECT 
+                card_id,
+                detection,
+                timestamp_ms,
+                strftime('%H', datetime(timestamp_ms/1000, 'unixepoch')) as hour,
+                DATE(datetime(timestamp_ms/1000, 'unixepoch')) as date
+            FROM detections
+            WHERE 1=1
+        '''
+        params = []
+        
+        if date:
+            query += " AND DATE(datetime(timestamp_ms/1000, 'unixepoch')) = ?"
+            params.append(date)
+        
+        # Group by card_id, timestamp_ms to get unique readings per timestamp
+        query += " GROUP BY card_id, timestamp_ms ORDER BY card_id, timestamp_ms"
+        
+        logging.info(f"Executing query: {query} with params: {params}")
+        cursor.execute(query, params)
+        results = cursor.fetchall()
+        
+        logging.info(f"Raw data from database: {results}")
+        
+        # Initialize hourly data
+        hourly_data = {}
+        for hour in range(24):
+            hourly_data[hour] = {"Trap 1": 0, "Trap 2": 0}
+        
+        # Process data for each card separately to calculate incremental differences
+        card_data = {1: [], 2: []}
+        for row in results:
+            card_id = row[0]
+            detection = row[1]
+            timestamp_ms = row[2]
+            hour = int(row[3])
+            card_data[card_id].append((detection, timestamp_ms, hour))
+        
+        # Calculate incremental differences for each card
+        for card_id in [1, 2]:
+            trap_name = f"Trap {card_id}"
+            data_points = card_data[card_id]
+            
+            logging.info(f"Processing {trap_name} with {len(data_points)} data points: {data_points}")
+            
+            for i in range(len(data_points)):
+                current_detection = data_points[i][0]
+                current_hour = data_points[i][2]
+                
+                if i == 0:
+                    # First reading: use the detection value as-is
+                    increment = current_detection
+                    logging.info(f"{trap_name} - First reading at hour {current_hour}: {current_detection} (using as increment: {increment})")
+                else:
+                    # Calculate difference from previous reading (cumulative logic)
+                    previous_detection = data_points[i-1][0]
+                    increment = current_detection - previous_detection
+                    logging.info(f"{trap_name} - Hour {current_hour}: current={current_detection}, previous={previous_detection}, increment={increment}")
+                
+                # Handle negative increments (sensor reset or error)
+                if increment < 0:
+                    logging.warning(f"{trap_name} - Negative increment detected: {increment}. Using current value instead.")
+                    increment = current_detection  # Use current value when sensor resets
+                
+                # Add increment to the hour
+                if card_id == 1:
+                    hourly_data[current_hour]["Trap 1"] += increment
+                elif card_id == 2:
+                    hourly_data[current_hour]["Trap 2"] += increment
+        
+        logging.info(f"Final hourly data: {hourly_data}")
+        
+        # Format the response as requested
+        result = []
+        for hour in range(24):
+            hour_str = f"{hour:02d}:00"
+            result.append({
+                "name": hour_str,
+                "Trap 1": hourly_data[hour]["Trap 1"],
+                "Trap 2": hourly_data[hour]["Trap 2"]
+            })
+        
+        conn.close()
+        return jsonify(result)
+        
+    except Exception as e:
+        logging.error(f"Error getting hourly detections: {e}")
+        # Return default structure with all zeros if error
+        result = []
+        for hour in range(24):
+            hour_str = f"{hour:02d}:00"
+            result.append({
+                "name": hour_str,
+                "Trap 1": 0,
+                "Trap 2": 0
+            })
+        return jsonify(result)
+
 
 @app.route('/detections_per_day', methods=['GET'])
 def get_detections_per_day():
@@ -382,88 +503,6 @@ def get_detections_per_day():
         logging.error(f"Error getting daily detections: {e}")
         return jsonify({"error": "Error retrieving daily data"}), 500
 
-@app.route('/detections_per_hour', methods=['GET'])
-def get_detections_per_hour():
-    """Get detection count grouped by hour of the day (sum of detections per hour)"""
-    try:
-        # Ensure database exists before querying
-        init_database()
-        
-        conn = sqlite3.connect(DB_NAME)
-        cursor = conn.cursor()
-        
-        # Get optional date filter from query parameters
-        date = request.args.get('date')  # Format: YYYY-MM-DD
-        logging.info(f"Date filter requested: {date}")
-        
-        # Get SUM of detections grouped by hour and card
-        query = '''
-            SELECT 
-                strftime('%H', datetime(timestamp_ms/1000, 'unixepoch')) as hour,
-                card_id,
-                SUM(detection) as total_detections
-            FROM detections
-            WHERE 1=1
-        '''
-        params = []
-        
-        if date:
-            query += " AND DATE(datetime(timestamp_ms/1000, 'unixepoch')) = ?"
-            params.append(date)
-        
-        query += " GROUP BY strftime('%H', datetime(timestamp_ms/1000, 'unixepoch')), card_id ORDER BY hour"
-        
-        logging.info(f"Executing query: {query} with params: {params}")
-        cursor.execute(query, params)
-        results = cursor.fetchall()
-        
-        logging.info(f"Hourly detection sums from database: {results}")
-        
-        # Initialize hourly data
-        hourly_data = {}
-        for hour in range(24):
-            hourly_data[hour] = {"Trap 1": 0, "Trap 2": 0}
-        
-        # Fill with actual sums from database
-        for row in results:
-            hour = int(row[0])
-            card_id = row[1]
-            total_detections = row[2]
-            
-            logging.info(f"Hour {hour:02d}: Card {card_id} = {total_detections} detections")
-            
-            if card_id == 1:
-                hourly_data[hour]["Trap 1"] = total_detections
-            elif card_id == 2:
-                hourly_data[hour]["Trap 2"] = total_detections
-        
-        logging.info(f"Final hourly data: {hourly_data}")
-        
-        # Format the response as requested
-        result = []
-        for hour in range(24):
-            hour_str = f"{hour:02d}:00"
-            result.append({
-                "name": hour_str,
-                "Trap 1": hourly_data[hour]["Trap 1"],
-                "Trap 2": hourly_data[hour]["Trap 2"]
-            })
-        
-        conn.close()
-        return jsonify(result)
-        
-    except Exception as e:
-        logging.error(f"Error getting hourly detections: {e}")
-        # Return default structure with all zeros if error
-        result = []
-        for hour in range(24):
-            hour_str = f"{hour:02d}:00"
-            result.append({
-                "name": hour_str,
-                "Trap 1": 0,
-                "Trap 2": 0
-            })
-        return jsonify(result)
 
 @socketio.on('connect')
 def handle_connect():
